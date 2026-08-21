@@ -16,7 +16,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup Node.js 20
+      - name: Setup Node.js 22
         uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -24,7 +24,7 @@ jobs:
       - name: Enable corepack and prepare pnpm
         run: |
           corepack enable
-          corepack prepare pnpm@latest --activate
+          corepack prepare pnpm@10.12.4 --activate
 
       - name: Install dependencies (pnpm install)
         run: |
