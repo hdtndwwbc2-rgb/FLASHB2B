@@ -1,0 +1,54 @@
+name: Validate build (manual)
+
+# Manual workflow to validate install, prisma generate and frontend/backend builds
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Enable corepack and prepare pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@latest --activate
+
+      - name: Install dependencies (pnpm install)
+        run: |
+          mkdir -p logs
+          pnpm install --frozen-lockfile 2>&1 | tee logs/pnpm-install.log
+        continue-on-error: true
+
+      - name: Prisma generate (backend)
+        run: |
+          pnpm --filter backend prisma generate 2>&1 | tee logs/prisma-generate.log
+        continue-on-error: true
+
+      - name: Build backend (TypeScript)
+        run: |
+          pnpm --filter backend build 2>&1 | tee logs/backend-build.log
+        continue-on-error: true
+
+      - name: Build frontend (Next.js)
+        run: |
+          pnpm --filter frontend build 2>&1 | tee logs/frontend-build.log
+        continue-on-error: true
+
+      - name: Upload logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: validate-logs
+          path: logs
