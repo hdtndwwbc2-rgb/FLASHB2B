@@ -1,0 +1,724 @@
+name: Bootstrap scaffold (manual)
+
+# Run manually from Actions → Bootstrap scaffold → Run workflow
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create scaffold files and push branch
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          BRANCH="feature/init-gpt-scaffold"
+          # If branch exists on remote, add timestamp suffix
+          if git ls-remote --heads origin "refs/heads/$BRANCH" | grep -q "refs/heads/$BRANCH"; then
+            TS=$(date +%s)
+            BRANCH="${BRANCH}-${TS}"
+            echo "Remote branch existed; using $BRANCH"
+          else
+            echo "Using branch $BRANCH"
+          fi
+
+          # make directories
+          mkdir -p .github/workflows
+          mkdir -p apps/frontend/pages/product
+          mkdir -p apps/frontend/styles
+          mkdir -p apps/frontend/components
+          mkdir -p apps/frontend/public
+          mkdir -p apps/backend/src/routes
+          mkdir -p apps/backend/src/lib
+          mkdir -p prisma
+
+          # root package.json
+          cat > package.json <<'EOF'
+{
+  "name": "flashb2b-monorepo",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": ["apps/*"],
+  "scripts": {
+    "dev": "concurrently \"pnpm --filter backend dev\" \"pnpm --filter frontend dev\"",
+    "dev:backend": "pnpm --filter backend dev",
+    "dev:frontend": "pnpm --filter frontend dev",
+    "build": "pnpm --filter frontend build && pnpm --filter backend build",
+    "lint": "echo \"Add ESLint later\""
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.0",
+    "pnpm": "^8.0.0"
+  }
+}
+EOF
+
+          # .gitignore
+          cat > .gitignore <<'EOF'
+node_modules
+.env
+.env.local
+apps/**/node_modules
+**/.DS_Store
+dist
+coverage
+.idea
+.vscode
+EOF
+
+          # README.md
+          cat > README.md <<'EOF'
+# FLASHB2B
+
+Scaffold inicial para la plataforma marketplace B2B (Next.js frontend, Express backend, Prisma + Supabase). Prioridad: funcionalidad B2B completa (carrito, checkout, Transbank/Webpay sandbox, Orden de Compra, estados de pedido/pago, proveedores, Supabase integration).
+
+Pasos rápidos para arrancar (local):
+
+1. Instalar dependencias (usar pnpm recomendado):
+   pnpm install
+
+2. Copiar variables de entorno:
+   cp .env.example .env
+   - Rellena las variables (Supabase, OPENAI_API_KEY, TRANSBANK_* cuando las tengas)
+
+3. Generar cliente Prisma y migraciones (si usas database local):
+   pnpm --filter backend prisma generate
+   pnpm --filter backend prisma migrate dev --name init
+
+4. Arrancar en desarrollo:
+   pnpm dev
+
+Qué incluye esta rama:
+- apps/frontend: Next.js + Tailwind (páginas básicas: catálogo, producto, carrito, checkout)
+- apps/backend: Express + TypeScript con endpoints: /api/products, /api/checkout, /api/webhooks/transbank, /api/gpt
+- prisma/schema.prisma: modelos iniciales (User, Company, Product, SKU, Cart, Order, Payment, Supplier)
+- .env.example con variables placeholders
+- CI skeleton
+
+Siguientes pasos sugeridos:
+- Rellenar UI con diseño y flujos de empresa/usuario
+- Añadir integración real Transbank sandbox credentials en Secrets
+- Completar pruebas y despliegue
+EOF
+
+          # .env.example
+          cat > .env.example <<'EOF'
+# Environment example
+
+# Supabase
+NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=anon_key_here
+SUPABASE_SERVICE_ROLE_KEY=service_role_key_here
+
+# Database (Postgres) - used by Prisma (if you use Supabase Postgres, set DATABASE_URL accordingly)
+DATABASE_URL=postgresql://user:password@localhost:5432/flashb2b
+
+# OpenAI
+OPENAI_API_KEY=sk-...
+
+# Transbank / Webpay (integration placeholders)
+TRANSBANK_ENV=integration
+TRANSBANK_MALL_ID=
+TRANSBANK_API_KEY=
+TRANSBANK_PRIVATE_KEY=
+
+# Other
+NEXTAUTH_SECRET=change_me
+EOF
+
+          # prisma/schema.prisma
+          cat > prisma/schema.prisma <<'EOF'
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  role      UserRole @default(CUSTOMER)
+  company   Company? @relation(fields: [companyId], references: [id])
+  companyId String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Company {
+  id        String    @id @default(cuid())
+  name      String
+  slug      String    @unique
+  users     User[]
+  products  Product[]
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+model Supplier {
+  id        String   @id @default(cuid())
+  name      String
+  contact   String?
+  createdAt DateTime @default(now())
+}
+
+model Product {
+  id          String    @id @default(cuid())
+  title       String
+  description String?
+  sku         String    @unique
+  price       Int
+  stock       Int       @default(0)
+  company     Company?  @relation(fields: [companyId], references: [id])
+  companyId   String?
+  supplier    Supplier? @relation(fields: [supplierId], references: [id])
+  supplierId  String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+model Cart {
+  id        String    @id @default(cuid())
+  user      User      @relation(fields: [userId], references: [id])
+  userId    String
+  items     CartItem[]
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+model CartItem {
+  id        String  @id @default(cuid())
+  cart      Cart    @relation(fields: [cartId], references: [id])
+  cartId    String
+  product   Product @relation(fields: [productId], references: [id])
+  productId String
+  quantity  Int
+}
+
+model Order {
+  id          String      @id @default(cuid())
+  user        User        @relation(fields: [userId], references: [id])
+  userId      String
+  company     Company?    @relation(fields: [companyId], references: [id])
+  companyId   String?
+  items       OrderItem[]
+  total       Int
+  status      OrderStatus @default(DRAFT)
+  payment     Payment?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+}
+
+model OrderItem {
+  id        String  @id @default(cuid())
+  order     Order   @relation(fields: [orderId], references: [id])
+  orderId   String
+  product   Product @relation(fields: [productId], references: [id])
+  productId String
+  quantity  Int
+  price     Int
+}
+
+model Payment {
+  id         String        @id @default(cuid())
+  order      Order         @relation(fields: [orderId], references: [id])
+  orderId    String        @unique
+  method     PaymentMethod
+  status     PaymentStatus @default(PENDING)
+  providerId String?       // provider transaction id (e.g., transbank token)
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+}
+
+enum UserRole {
+  ADMIN
+  COMPANY_ADMIN
+  VENDOR
+  CUSTOMER
+}
+
+enum OrderStatus {
+  DRAFT
+  PENDING_PAYMENT
+  PENDING_OC
+  PAID
+  CANCELLED
+  SHIPPED
+  DELIVERED
+}
+
+enum PaymentMethod {
+  WEBPAY
+  OC
+  OTHER
+}
+
+enum PaymentStatus {
+  PENDING
+  CONFIRMED
+  FAILED
+}
+EOF
+
+          # backend package.json
+          mkdir -p apps/backend
+          cat > apps/backend/package.json <<'EOF'
+{
+  "name": "backend",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
+    "build": "tsc -p .",
+    "start": "node dist/server.js",
+    "prisma": "prisma"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.0.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.0.0",
+    "express": "^4.18.2",
+    "node-fetch": "^3.3.2",
+    "@supabase/supabase-js": "^2.10.0"
+  },
+  "devDependencies": {
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.0.0",
+    "prisma": "^5.0.0"
+  }
+}
+EOF
+
+          # backend tsconfig
+          cat > apps/backend/tsconfig.json <<'EOF'
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "CommonJS",
+    "outDir": "dist",
+    "rootDir": "src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true
+  }
+}
+EOF
+
+          # backend server.ts
+          mkdir -p apps/backend/src
+          cat > apps/backend/src/server.ts <<'EOF'
+import express from 'express';
+import cors from 'cors';
+import dotenv from 'dotenv';
+import { productsRouter } from './routes/products';
+import { checkoutRouter } from './routes/checkout';
+import { gptRouter } from './routes/gpt';
+
+dotenv.config();
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+app.use('/api/products', productsRouter);
+app.use('/api/checkout', checkoutRouter);
+app.use('/api/gpt', gptRouter);
+
+app.get('/', (_req, res) => res.send('FLASHB2B backend running'));
+
+const port = process.env.PORT || 4000;
+app.listen(port, () => console.log(`Backend listening on http://localhost:${port}`));
+EOF
+
+          # backend supabase lib
+          cat > apps/backend/src/lib/supabase.ts <<'EOF'
+import { createClient } from '@supabase/supabase-js';
+
+const url = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+
+export const supabase = createClient(url, anon);
+EOF
+
+          # backend openai lib
+          cat > apps/backend/src/lib/openai.ts <<'EOF'
+import fetch from 'node-fetch';
+
+const OPENAI_URL = 'https://api.openai.com/v1/chat/completions';
+const MODEL = process.env.OPENAI_MODEL || 'gpt-3.5-turbo';
+
+export async function callOpenAI(prompt: string) {
+  const key = process.env.OPENAI_API_KEY;
+  if (!key) throw new Error('OPENAI_API_KEY not set');
+
+  const res = await fetch(OPENAI_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${key}`,
+    },
+    body: JSON.stringify({
+      model: MODEL,
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 500,
+    }),
+  });
+  const data = await res.json();
+  return data;
+}
+EOF
+
+          # transbank helper
+          cat > apps/backend/src/lib/transbank.ts <<'EOF'
+// Minimal helper for Transbank/Webpay sandbox placeholder
+
+export function verifyTransbankSignature(_body: any, _headers: any) {
+  // Implement signature verification using Transbank SDK or manual verification.
+  return true;
+}
+
+export function createTransbankTransaction(_orderId: string, _amount: number) {
+  // Return an object with redirect url and token placeholder for sandbox.
+  return { url: 'https://webpay.example/sandbox/redirect', token: 'SANDBOX_TOKEN' };
+}
+EOF
+
+          # products route
+          cat > apps/backend/src/routes/products.ts <<'EOF'
+import express from 'express';
+import { PrismaClient } from '@prisma/client';
+
+const prisma = new PrismaClient();
+export const productsRouter = express.Router();
+
+productsRouter.get('/', async (_req, res) => {
+  const products = await prisma.product.findMany({});
+  res.json(products);
+});
+
+productsRouter.get('/:id', async (req, res) => {
+  const id = req.params.id;
+  const product = await prisma.product.findUnique({ where: { id } });
+  if (!product) return res.status(404).json({ error: 'Not found' });
+  res.json(product);
+});
+
+productsRouter.post('/', async (req, res) => {
+  const { title, description, sku, price, stock, companyId } = req.body;
+  const p = await prisma.product.create({ data: { title, description, sku, price, stock, companyId } });
+  res.json(p);
+});
+EOF
+
+          # checkout route
+          cat > apps/backend/src/routes/checkout.ts <<'EOF'
+import express from 'express';
+import { PrismaClient } from '@prisma/client';
+import { createTransbankTransaction } from '../lib/transbank';
+
+const prisma = new PrismaClient();
+export const checkoutRouter = express.Router();
+
+// Start checkout - supports WEBPAY and OC (order created with PENDING_OC)
+checkoutRouter.post('/start', async (req, res) => {
+  try {
+    const { userId, items, method } = req.body; // items: [{productId, quantity}]
+    if (!userId || !items || !Array.isArray(items)) return res.status(400).json({ error: 'invalid' });
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) return res.status(404).json({ error: 'user not found' });
+
+    // calculate total
+    let total = 0;
+    const order = await prisma.order.create({
+      data: {
+        userId,
+        total: 0,
+        status: method === 'OC' ? 'PENDING_OC' : 'PENDING_PAYMENT',
+      },
+    });
+
+    for (const it of items) {
+      const prod = await prisma.product.findUnique({ where: { id: it.productId } });
+      if (!prod) continue;
+      total += prod.price * it.quantity;
+      await prisma.orderItem.create({ data: { orderId: order.id, productId: prod.id, quantity: it.quantity, price: prod.price } });
+    }
+
+    await prisma.order.update({ where: { id: order.id }, data: { total } });
+
+    if (method === 'WEBPAY') {
+      const tx = createTransbankTransaction(order.id, total);
+      return res.json({ orderId: order.id, payment: { method: 'WEBPAY', tx } });
+    }
+
+    // OC flow: admin will approve later
+    await prisma.payment.create({ data: { orderId: order.id, method: 'OC', status: 'PENDING' } });
+    return res.json({ orderId: order.id, payment: { method: 'OC' } });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+// Webhook endpoint for Transbank (sandbox) to confirm payment
+checkoutRouter.post('/webhook/transbank', async (req, res) => {
+  // TODO: verify signature
+  const { orderId, status, providerId } = req.body;
+  if (!orderId) return res.status(400).send('missing');
+
+  // Update payment and order
+  const payment = await prisma.payment.findUnique({ where: { orderId } });
+  if (payment) {
+    await prisma.payment.update({ where: { id: payment.id }, data: { status: status === 'OK' ? 'CONFIRMED' : 'FAILED', providerId } });
+  }
+  if (status === 'OK') {
+    await prisma.order.update({ where: { id: orderId }, data: { status: 'PAID' } });
+  } else {
+    await prisma.order.update({ where: { id: orderId }, data: { status: 'CANCELLED' } });
+  }
+  res.send('ok');
+});
+EOF
+
+          # gpt route
+          cat > apps/backend/src/routes/gpt.ts <<'EOF'
+import express from 'express';
+import { callOpenAI } from '../lib/openai';
+
+export const gptRouter = express.Router();
+
+// Example: generate product description
+gptRouter.post('/product-description', async (req, res) => {
+  try {
+    const { title, features } = req.body;
+    const prompt = `Genera una descripción comercial en español para el producto \"${title}\" con estas características: ${JSON.stringify(features)}.`;
+    const data = await callOpenAI(prompt);
+    const text = data?.choices?.[0]?.message?.content || JSON.stringify(data);
+    res.json({ description: text });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+EOF
+
+          # backend prisma client import helper
+          cat > apps/backend/src/prisma.ts <<'EOF'
+import { PrismaClient } from '@prisma/client';
+
+const prisma = new PrismaClient();
+export default prisma;
+EOF
+
+          # frontend package.json
+          mkdir -p apps/frontend
+          cat > apps/frontend/package.json <<'EOF'
+{
+  "name": "frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "next": "14.0.0",
+    "react": "18.2.0",
+    "react-dom": "18.2.0",
+    "axios": "^1.4.0"
+  }
+}
+EOF
+
+          # next.config.js
+          cat > apps/frontend/next.config.js <<'EOF'
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  reactStrictMode: true,
+}
+module.exports = nextConfig
+EOF
+
+          # frontend tsconfig
+          cat > apps/frontend/tsconfig.json <<'EOF'
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "forceConsistentCasingInFileNames": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "node",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "preserve"
+  },
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx"],
+  "exclude": ["node_modules"]
+}
+EOF
+
+          # frontend index page
+          cat > apps/frontend/pages/index.tsx <<'EOF'
+import React from 'react'
+
+export default function Home() {
+  return (
+    <main className="p-8 bg-flash-black min-h-screen text-white">
+      <div className="max-w-4xl mx-auto">
+        <h1 className="text-4xl font-bold text-flash-yellow">FLASHB2B</h1>
+        <p className="mt-4 text-gray-200">Marketplace B2B — catálogo, carrito, checkout (Transbank sandbox + OC), roles y Supabase-ready.</p>
+        <div className="mt-6">
+          <a href="/cart" className="text-flash-yellow underline">Ir al carrito</a>
+        </div>
+      </div>
+    </main>
+  )
+}
+EOF
+
+          # product page
+          cat > apps/frontend/pages/product/[id].tsx <<'EOF'
+import React from 'react'
+import { useRouter } from 'next/router'
+
+export default function ProductPage(){
+  const router = useRouter()
+  const { id } = router.query
+  return (
+    <main className="p-8">
+      <h1 className="text-2xl">Producto {id}</h1>
+      <p>Detalles básicos aquí (rellenar con llamadas a /api/products)</p>
+    </main>
+  )
+}
+EOF
+
+          # cart page
+          cat > apps/frontend/pages/cart.tsx <<'EOF'
+import React from 'react'
+
+export default function Cart(){
+  return (
+    <main className="p-8">
+      <h1 className="text-2xl">Carrito</h1>
+      <p>Aquí se listarán los items del carrito. (Integrar con API de backend).</p>
+    </main>
+  )
+}
+EOF
+
+          # checkout page
+          cat > apps/frontend/pages/checkout.tsx <<'EOF'
+import React from 'react'
+
+export default function Checkout(){
+  return (
+    <main className="p-8">
+      <h1 className="text-2xl">Checkout</h1>
+      <p>Selecciona método: Webpay (sandbox) o Orden de Compra (OC).</p>
+    </main>
+  )
+}
+EOF
+
+          # frontend globals.css
+          cat > apps/frontend/styles/globals.css <<'EOF'
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body { font-family: ui-sans-serif, system-ui, -apple-system; }
+EOF
+
+          # tailwind config with FLASH palette
+          cat > apps/frontend/tailwind.config.js <<'EOF'
+module.exports = {
+  content: [
+    './apps/frontend/pages/**/*.{js,ts,jsx,tsx}',
+    './apps/frontend/components/**/*.{js,ts,jsx,tsx}'
+  ],
+  theme: {
+    extend: {
+      colors: {
+        flash: {
+          black: '#0b0b0b',
+          yellow: '#FFD400'
+        }
+      }
+    },
+  },
+  plugins: [],
+}
+EOF
+
+          # postcss
+          cat > apps/frontend/postcss.config.js <<'EOF'
+module.exports = {
+  plugins: {
+    tailwindcss: {},
+    autoprefixer: {},
+  },
+}
+EOF
+
+          # CI workflow skeleton
+          cat > .github/workflows/ci.yml <<'EOF'
+name: CI
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Build frontend
+        run: pnpm --filter frontend build
+      - name: Typecheck backend
+        run: pnpm --filter backend build
+EOF
+
+          # frontend index styles placeholder ensured by tailwind config
+          # commit files
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add .
+          git commit -m "chore: scaffold initial Next/Tailwind + Express/Prisma + Supabase (feature/init-gpt-scaffold)" || echo "No changes to commit"
+          git push --set-upstream origin "$BRANCH"
+
+          # create PR via GitHub API
+          PR_TITLE="chore(scaffold): init Next/Tailwind + Express + Prisma + Supabase (FLASHB2B)"
+          PR_BODY="Scaffold inicial para FLASHB2B: monorepo con apps/frontend (Next.js + Tailwind, paleta FLASH negro/amarillo) y apps/backend (Express + TypeScript), prisma/schema.prisma, .env.example, y CI skeleton.\n\nChecklist:\n- [ ] Añadir credenciales Transbank sandbox en Secrets\n- [ ] Configurar Supabase project + copiar credenciales en .env\n- [ ] Ejecutar migrations y probar endpoints\n\nEsta PR fue creada automáticamente por Actions (bootstrap)."
+          DATA=$(jq -nc --arg title "$PR_TITLE" --arg head "$BRANCH" --arg base "main" --arg body "$PR_BODY" '{title:$title, head:$head, base:$base, body:$body}')
+          curl -s -X POST -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/${GITHUB_REPOSITORY}/pulls" -d "$DATA" || echo "Failed to create PR via API. You can create one manually from branch $BRANCH."
+
+      - name: Finished
+        run: echo "Bootstrap completed. If a PR was created it should be visible in the repo's Pull Requests."
